@@ -736,4 +736,496 @@ class SentimentAnalysisService:
         # Combine indicators
         sma_signal = 1 if sma_5 > sma_20 else -1 if sma_5 < sma_20 else 0
         rsi_signal = 1 if rsi < 30 else -1 if rsi > 70 else 0
-        macd_signal = 1 if macd > 0 else -
+        macd_signal = 1 if macd > 0 else -1 if macd < 0 else 0
+        
+        # Weight and combine signals
+        technical_score = 0.4 * sma_signal + 0.3 * rsi_signal + 0.3 * macd_signal
+        
+        return technical_score
+    
+    def _analyze_seasonal_factors(self, commodity: Commodity, current_week: int = None, current_month: int = None) -> float:
+        """
+        Analyze seasonal and cyclical patterns affecting commodity prices.
+        
+        Args:
+            commodity: Commodity object
+            current_week: Current week number (1-52)
+            current_month: Current month number (1-12)
+            
+        Returns:
+            Score between -1 (bearish seasonal impact) and 1 (bullish seasonal impact)
+        """
+        # Get commodity category for seasonal analysis
+        category = commodity.category
+        
+        # Define seasonal patterns for different commodity categories
+        seasonal_patterns = {
+            "agriculture": {
+                "monthly": [0.2, 0.3, 0.1, -0.1, -0.3, -0.4, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3],  # Monthly pattern
+                "weekly": [0.1 * (i % 4 - 2) for i in range(52)]  # Weekly pattern (simplified)
+            },
+            "energy": {
+                "monthly": [0.5, 0.3, 0.0, -0.2, -0.3, 0.0, 0.2, 0.3, 0.1, 0.0, 0.1, 0.4],
+                "weekly": [0.05 * ((i % 12) - 6) for i in range(52)]
+            },
+            "metals": {
+                "monthly": [0.1, 0.1, 0.0, 0.0, -0.1, -0.1, -0.1, 0.0, 0.1, 0.2, 0.1, 0.0],
+                "weekly": [0.02 * ((i % 8) - 4) for i in range(52)]
+            },
+            "livestock": {
+                "monthly": [0.0, 0.1, 0.2, 0.3, 0.2, 0.0, -0.2, -0.3, -0.2, -0.1, 0.0, 0.1],
+                "weekly": [0.08 * math.sin(2 * math.pi * i / 52) for i in range(52)]
+            }
+        }
+        
+        # Get default patterns if category not found
+        category_patterns = seasonal_patterns.get(category.lower(), {
+            "monthly": [0.0] * 12,
+            "weekly": [0.0] * 52
+        })
+        
+        # Determine seasonal impact based on current time
+        if current_month is not None:
+            # Use monthly patterns
+            month_idx = current_month - 1  # Convert to 0-indexed
+            return category_patterns["monthly"][month_idx]
+        elif current_week is not None:
+            # Use weekly patterns
+            week_idx = current_week - 1  # Convert to 0-indexed
+            return category_patterns["weekly"][week_idx]
+        else:
+            # Default to current month
+            current_month = datetime.now().month
+            month_idx = current_month - 1
+            return category_patterns["monthly"][month_idx]
+    
+    def _analyze_macroeconomic_indicators(self, commodity_category: str) -> float:
+        """
+        Analyze macroeconomic indicators affecting long-term commodity prices.
+        
+        Args:
+            commodity_category: Category of the commodity
+            
+        Returns:
+            Score between -1 (bearish macro impact) and 1 (bullish macro impact)
+        """
+        try:
+            # Fetch macroeconomic data from data service
+            macro_data = self.data_service.get_macroeconomic_indicators_sync()
+            
+            if not macro_data:
+                return 0.0
+                
+            # Extract key indicators
+            inflation_rate = macro_data.get("inflation_rate", 2.0)  # Percent
+            interest_rate = macro_data.get("interest_rate", 2.0)  # Percent
+            gdp_growth = macro_data.get("gdp_growth", 2.0)  # Percent
+            currency_strength = macro_data.get("usd_index", 100.0)  # USD index
+            oil_price = macro_data.get("oil_price", 70.0)  # USD per barrel
+            
+            # Define category-specific sensitivities to macro factors
+            sensitivities = {
+                "agriculture": {
+                    "inflation": 0.3,
+                    "interest_rate": -0.2,
+                    "gdp_growth": 0.2,
+                    "currency_strength": -0.4,
+                    "oil_price": -0.3
+                },
+                "energy": {
+                    "inflation": 0.4,
+                    "interest_rate": -0.3,
+                    "gdp_growth": 0.5,
+                    "currency_strength": -0.3,
+                    "oil_price": 0.8
+                },
+                "metals": {
+                    "inflation": 0.6,
+                    "interest_rate": -0.4,
+                    "gdp_growth": 0.4,
+                    "currency_strength": -0.5,
+                    "oil_price": 0.2
+                },
+                "livestock": {
+                    "inflation": 0.3,
+                    "interest_rate": -0.1,
+                    "gdp_growth": 0.3,
+                    "currency_strength": -0.3,
+                    "oil_price": -0.2
+                }
+            }
+            
+            # Get default sensitivities if category not found
+            category_sensitivities = sensitivities.get(commodity_category.lower(), {
+                "inflation": 0.3,
+                "interest_rate": -0.2,
+                "gdp_growth": 0.3,
+                "currency_strength": -0.3,
+                "oil_price": 0.0
+            })
+            
+            # Calculate inflation impact (higher inflation generally increases commodity prices)
+            inflation_impact = (inflation_rate - 2.0) / 10.0  # Normalize around 2% target
+            inflation_impact *= category_sensitivities["inflation"]
+            
+            # Calculate interest rate impact (higher rates generally decrease commodity prices)
+            interest_impact = (interest_rate - 2.5) / 5.0  # Normalize around 2.5% neutral rate
+            interest_impact *= category_sensitivities["interest_rate"]
+            
+            # Calculate GDP growth impact (higher growth generally increases commodity prices)
+            gdp_impact = (gdp_growth - 2.0) / 5.0  # Normalize around 2% average growth
+            gdp_impact *= category_sensitivities["gdp_growth"]
+            
+            # Calculate currency strength impact (stronger USD generally decreases commodity prices)
+            currency_impact = (currency_strength - 100.0) / 20.0  # Normalize around index 100
+            currency_impact *= category_sensitivities["currency_strength"]
+            
+            # Calculate oil price impact (varies by commodity category)
+            oil_impact = (oil_price - 70.0) / 30.0  # Normalize around $70/barrel
+            oil_impact *= category_sensitivities["oil_price"]
+            
+            # Combine all impacts
+            macro_score = (
+                inflation_impact +
+                interest_impact +
+                gdp_impact +
+                currency_impact +
+                oil_impact
+            )
+            
+            # Normalize to range between -1 and 1
+            macro_score = max(-1.0, min(1.0, macro_score))
+            
+            return macro_score
+            
+        except Exception as e:
+            logger.error(f"Error analyzing macroeconomic indicators: {str(e)}")
+            return 0.0
+    
+    def _calculate_confidence(self, sentiment: Dict, market_data: Dict, news_data: List[Dict]) -> float:
+        """
+        Calculate confidence level for the sentiment prediction.
+        
+        Returns:
+            Confidence score between 0.0 and 1.0
+        """
+        # Base confidence
+        base_confidence = 0.7
+        
+        # Adjustments based on data quality and quantity
+        
+        # Market data quality adjustment
+        data_points = len(market_data.get("hourly_prices", [])) + len(market_data.get("daily_prices", []))
+        if data_points < 10:
+            market_data_adjustment = -0.2
+        elif data_points < 30:
+            market_data_adjustment = -0.1
+        elif data_points < 60:
+            market_data_adjustment = 0.0
+        else:
+            market_data_adjustment = 0.1
+            
+        # News data quality adjustment
+        news_count = len(news_data)
+        if news_count < 5:
+            news_data_adjustment = -0.15
+        elif news_count < 15:
+            news_data_adjustment = -0.05
+        elif news_count < 30:
+            news_data_adjustment = 0.0
+        else:
+            news_data_adjustment = 0.05
+            
+        # Sentiment strength adjustment (stronger sentiments have higher confidence)
+        sentiment_strength = abs(sentiment.get("score", 0.0))
+        if sentiment_strength < 0.2:
+            strength_adjustment = -0.1  # Very weak signal
+        elif sentiment_strength < 0.4:
+            strength_adjustment = -0.05  # Weak signal
+        elif sentiment_strength < 0.6:
+            strength_adjustment = 0.0  # Moderate signal
+        elif sentiment_strength < 0.8:
+            strength_adjustment = 0.05  # Strong signal
+        else:
+            strength_adjustment = 0.1  # Very strong signal
+            
+        # Calculate final confidence
+        confidence = base_confidence + market_data_adjustment + news_data_adjustment + strength_adjustment
+        
+        # Ensure confidence is within valid range
+        confidence = max(0.1, min(0.95, confidence))
+        
+        return confidence
+    
+    def _store_predictions(self, commodity_id: int, hourly: Dict, daily: Dict, weekly: Dict, monthly: Dict) -> None:
+        """
+        Store sentiment predictions in the database.
+        
+        Args:
+            commodity_id: ID of the commodity
+            hourly/daily/weekly/monthly: Sentiment prediction dictionaries
+        """
+        try:
+            # Create prediction records
+            timestamp = datetime.utcnow()
+            
+            hourly_prediction = SentimentPrediction(
+                commodity_id=commodity_id,
+                timeframe="hourly",
+                direction=hourly["direction"],
+                strength=hourly["strength"],
+                score=hourly["score"],
+                factors=json.dumps(hourly["factors"]),
+                confidence=self._calculate_confidence(hourly, {}, []),
+                created_at=timestamp
+            )
+            
+            daily_prediction = SentimentPrediction(
+                commodity_id=commodity_id,
+                timeframe="daily",
+                direction=daily["direction"],
+                strength=daily["strength"],
+                score=daily["score"],
+                factors=json.dumps(daily["factors"]),
+                confidence=self._calculate_confidence(daily, {}, []),
+                created_at=timestamp
+            )
+            
+            weekly_prediction = SentimentPrediction(
+                commodity_id=commodity_id,
+                timeframe="weekly",
+                direction=weekly["direction"],
+                strength=weekly["strength"],
+                score=weekly["score"],
+                factors=json.dumps(weekly["factors"]),
+                confidence=self._calculate_confidence(weekly, {}, []),
+                created_at=timestamp
+            )
+            
+            monthly_prediction = SentimentPrediction(
+                commodity_id=commodity_id,
+                timeframe="monthly",
+                direction=monthly["direction"],
+                strength=monthly["strength"],
+                score=monthly["score"],
+                factors=json.dumps(monthly["factors"]),
+                confidence=self._calculate_confidence(monthly, {}, []),
+                created_at=timestamp
+            )
+            
+            # Add to database
+            self.db_session.add(hourly_prediction)
+            self.db_session.add(daily_prediction)
+            self.db_session.add(weekly_prediction)
+            self.db_session.add(monthly_prediction)
+            self.db_session.commit()
+            
+        except Exception as e:
+            logger.error(f"Error storing predictions: {str(e)}")
+            self.db_session.rollback()
+            
+    async def get_sentiment_history(self, commodity_id: int, timeframe: str, days: int = 30) -> List[Dict]:
+        """
+        Get historical sentiment predictions for a commodity.
+        
+        Args:
+            commodity_id: ID of the commodity
+            timeframe: Timeframe for analysis (hourly, daily, weekly, monthly)
+            days: Number of days of history to retrieve
+            
+        Returns:
+            List of historical sentiment predictions
+        """
+        try:
+            # Calculate cutoff date
+            cutoff_date = datetime.utcnow() - timedelta(days=days)
+            
+            # Query database for historical predictions
+            predictions = self.db_session.query(SentimentPrediction).filter(
+                SentimentPrediction.commodity_id == commodity_id,
+                SentimentPrediction.timeframe == timeframe,
+                SentimentPrediction.created_at >= cutoff_date
+            ).order_by(SentimentPrediction.created_at.asc()).all()
+            
+            # Format results
+            result = []
+            for prediction in predictions:
+                result.append({
+                    "id": prediction.id,
+                    "commodity_id": prediction.commodity_id,
+                    "timeframe": prediction.timeframe,
+                    "direction": prediction.direction,
+                    "strength": prediction.strength,
+                    "score": prediction.score,
+                    "factors": json.loads(prediction.factors),
+                    "confidence": prediction.confidence,
+                    "created_at": prediction.created_at.isoformat()
+                })
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error retrieving sentiment history: {str(e)}")
+            return []
+    
+    async def get_sentiment_accuracy(self, commodity_id: int, timeframe: str, days: int = 30) -> Dict:
+        """
+        Calculate accuracy of past sentiment predictions.
+        
+        Args:
+            commodity_id: ID of the commodity
+            timeframe: Timeframe for analysis
+            days: Number of days of history to analyze
+            
+        Returns:
+            Dictionary with accuracy metrics
+        """
+        try:
+            # Get historical predictions
+            predictions = await self.get_sentiment_history(commodity_id, timeframe, days)
+            
+            if not predictions:
+                return {
+                    "accuracy": 0.0,
+                    "total_predictions": 0,
+                    "correct_predictions": 0,
+                    "incorrect_predictions": 0,
+                    "pending_predictions": 0,
+                    "analysis_period_days": days
+                }
+                
+            # Get actual price data for comparison
+            commodity = self.db_session.query(Commodity).filter(Commodity.id == commodity_id).first()
+            if not commodity:
+                raise ValueError(f"Commodity with ID {commodity_id} not found")
+                
+            market_data = await self.data_service.get_commodity_market_data(commodity.symbol)
+            
+            # Calculate verification window based on timeframe
+            if timeframe == "hourly":
+                verification_hours = 1
+            elif timeframe == "daily":
+                verification_hours = 24
+            elif timeframe == "weekly":
+                verification_hours = 24 * 7
+            else:  # monthly
+                verification_hours = 24 * 30
+                
+            # Calculate accuracy
+            total_predictions = len(predictions)
+            correct_predictions = 0
+            incorrect_predictions = 0
+            pending_predictions = 0
+            
+            for prediction in predictions:
+                # Skip predictions that haven't had time to be verified
+                prediction_time = datetime.fromisoformat(prediction["created_at"])
+                verification_time = prediction_time + timedelta(hours=verification_hours)
+                
+                if verification_time > datetime.utcnow():
+                    pending_predictions += 1
+                    continue
+                    
+                # Get actual price movement
+                actual_movement = self._get_actual_price_movement(
+                    market_data, prediction_time, verification_hours
+                )
+                
+                # Compare prediction with actual movement
+                if (prediction["direction"] == "bullish" and actual_movement > 0) or \
+                   (prediction["direction"] == "bearish" and actual_movement < 0) or \
+                   (prediction["direction"] == "neutral" and abs(actual_movement) < 0.01):
+                    correct_predictions += 1
+                else:
+                    incorrect_predictions += 1
+                    
+            # Calculate accuracy percentage
+            verified_predictions = correct_predictions + incorrect_predictions
+            accuracy = (correct_predictions / verified_predictions) * 100 if verified_predictions > 0 else 0
+            
+            return {
+                "accuracy": round(accuracy, 2),
+                "total_predictions": total_predictions,
+                "correct_predictions": correct_predictions,
+                "incorrect_predictions": incorrect_predictions,
+                "pending_predictions": pending_predictions,
+                "analysis_period_days": days
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating sentiment accuracy: {str(e)}")
+            return {
+                "accuracy": 0.0,
+                "error": str(e)
+            }
+    
+    def _get_actual_price_movement(self, market_data: Dict, prediction_time: datetime, verification_hours: int) -> float:
+        """
+        Get the actual price movement after a prediction.
+        
+        Args:
+            market_data: Market data dictionary
+            prediction_time: When the prediction was made
+            verification_hours: Hours to look ahead for verification
+            
+        Returns:
+            Percentage price movement
+        """
+        # Determine price key based on verification period
+        if verification_hours <= 1:
+            price_key = "hourly_prices"
+            time_key = "hourly_timestamps"
+        elif verification_hours <= 24:
+            price_key = "daily_prices"
+            time_key = "daily_timestamps"
+        elif verification_hours <= 24*7:
+            price_key = "weekly_prices"
+            time_key = "weekly_timestamps"
+        else:
+            price_key = "monthly_prices"
+            time_key = "monthly_timestamps"
+            
+        # Get price data and timestamps
+        prices = market_data.get(price_key, [])
+        timestamps = market_data.get(time_key, [])
+        
+        if not prices or not timestamps or len(prices) != len(timestamps):
+            return 0.0
+            
+        # Find price at prediction time
+        start_idx = None
+        end_idx = None
+        
+        for i, ts in enumerate(timestamps):
+            timestamp = datetime.fromisoformat(ts)
+            if timestamp >= prediction_time and start_idx is None:
+                start_idx = i
+            if timestamp >= prediction_time + timedelta(hours=verification_hours) and end_idx is None:
+                end_idx = i
+                break
+                
+        # Handle edge cases
+        if start_idx is None:
+            start_idx = 0
+        if end_idx is None:
+            end_idx = len(prices) - 1
+            
+        # Calculate price movement
+        if start_idx >= len(prices) or end_idx >= len(prices) or start_idx == end_idx:
+            return 0.0
+            
+        start_price = prices[start_idx]
+        end_price = prices[end_idx]
+        
+        price_movement = (end_price - start_price) / start_price
+        
+        return price_movement
+
+# Create factory function for dependency injection
+def get_sentiment_service(db_session: Session = None):
+    """Factory function to create a SentimentAnalysisService instance."""
+    if db_session is None:
+        # Import here to avoid circular imports
+        from database import get_db
+        db_session = next(get_db())
+    return SentimentAnalysisService(db_session)
